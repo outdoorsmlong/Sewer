@@ -16,7 +16,7 @@ import flow_engine as fe
 
 st.set_page_config(
     page_title="Flow Data Correction",
-    page_icon="🌊",
+    page_icon="🚽",
     layout="wide",
 )
 
@@ -41,7 +41,7 @@ CHART = dict(template="plotly_white", height=430, margin=dict(t=40, b=40))
 
 # ------------------------------------------------------------ sidebar
 with st.sidebar:
-    st.title("🌊 Flow Data Correction")
+    st.title("🚽 Flow Data Correction")
     st.caption("Polynomial method — area-velocity meter data")
 
     site = st.text_input("Site name", value="")
