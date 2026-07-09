@@ -221,6 +221,27 @@ with tab_corr:
         "use the tolerance band."
     )
 
+    def snap_points(idx, keep: str):
+        """Snap points to the fitted curve: mark them bad (so they don't
+        influence the fit), keep the trusted reading, and let the other
+        value be reconstructed from V(L) or L(V) in the corrected data."""
+        idx = pd.Index(idx)
+        SS.good_mask.loc[idx] = False
+        if keep == "level":
+            vals = adj.loc[idx, "level_adj"].where(
+                adj.loc[idx, "level_adj"].gt(0)
+                & adj.loc[idx, "level_adj"].le(dia)
+            )
+            SS.manual.loc[idx, "manual_level"] = vals.to_numpy()
+            SS.manual.loc[idx, "manual_velocity"] = np.nan
+        else:
+            vals = adj.loc[idx, "velocity_adj"].where(
+                adj.loc[idx, "velocity_adj"].gt(0)
+            )
+            SS.manual.loc[idx, "manual_velocity"] = vals.to_numpy()
+            SS.manual.loc[idx, "manual_level"] = np.nan
+        st.rerun()
+
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Good points", f"{n_good:,}")
     m2.metric("Removed / bad", f"{n_bad:,}")
@@ -261,10 +282,25 @@ with tab_corr:
             SS.good_mask = fe.default_good_mask(adj, dia)
             st.rerun()
 
-    # ---- correction scattergraph with selection-to-remove
+    # ---- correction scattergraph with selection-to-remove / snap
+    has_fill = (
+        SS.manual["manual_level"].notna() | SS.manual["manual_velocity"].notna()
+    ) & ~good
+    snap_df = pd.DataFrame(columns=["level", "velocity"], dtype=float)
+    if v_of_l is not None and has_fill.any():
+        ml = SS.manual.loc[has_fill, "manual_level"]
+        mv = SS.manual.loc[has_fill, "manual_velocity"]
+        sx = ml.where(ml.notna(), np.polyval(l_of_v, mv.fillna(0.0)))
+        sy = mv.where(mv.notna(), np.polyval(v_of_l, ml.fillna(0.0)))
+        snap_df = pd.DataFrame({"level": sx, "velocity": sy},
+                               index=ml.index).dropna()
+
     fig = go.Figure()
-    fig.add_trace(lv_scatter(adj.loc[~good], "level_adj", "velocity_adj",
+    fig.add_trace(lv_scatter(adj.loc[~good & ~has_fill],
+                             "level_adj", "velocity_adj",
                              "Removed", "#d0d5da"))
+    fig.add_trace(lv_scatter(snap_df, "level", "velocity",
+                             "Snapped to curve", "#0f9d58"))
     fig.add_trace(lv_scatter(adj.loc[good], "level_adj", "velocity_adj",
                              "Good", "#1f6feb"))
     if v_of_l is not None:
@@ -290,18 +326,39 @@ with tab_corr:
                             key="corr_chart",
                             selection_mode=("lasso", "box", "points"))
 
-    sel = [
-        p["customdata"] for p in event.selection.get("points", [])
-        if p.get("curve_number") == 1  # only points from the "Good" trace
-    ]
-    if sel:
-        if st.button(f"Remove {len(sel)} selected point(s) from good data",
-                     type="primary"):
-            SS.good_mask.loc[sel] = False
+    pts = event.selection.get("points", [])
+    sel_good = [p["customdata"] for p in pts if p.get("curve_number") == 2]
+    sel_any = [p["customdata"] for p in pts if p.get("curve_number") in (0, 1, 2)]
+
+    if sel_any:
+        st.markdown(f"**{len(sel_any)} point(s) selected**")
+        a1, a2, a3, a4 = st.columns(4)
+        if a1.button(f"Remove {len(sel_good)} from good data",
+                     disabled=not sel_good, width="stretch"):
+            SS.good_mask.loc[sel_good] = False
+            st.rerun()
+        if a2.button("Snap to curve — trust level", type="primary",
+                     width="stretch",
+                     help="Keep each point's level reading; velocity is "
+                          "reconstructed from V(L)."):
+            snap_points(sel_any, "level")
+        if a3.button("Snap to curve — trust velocity", width="stretch",
+                     help="Keep each point's velocity reading; level is "
+                          "reconstructed from L(V)."):
+            snap_points(sel_any, "velocity")
+        if a4.button("Restore to good data", width="stretch",
+                     help="Undo removal/snapping for the selected points."):
+            SS.good_mask.loc[sel_any] = fe.default_good_mask(
+                adj.loc[sel_any], dia
+            ).to_numpy()
+            SS.manual.loc[sel_any, ["manual_level", "manual_velocity"]] = np.nan
             st.rerun()
     else:
-        st.caption("Tip: lasso or box-select good points on the chart to "
-                   "remove them from the fit.")
+        st.caption(
+            "Tip: lasso or box-select points on the chart, then remove them "
+            "from the fit, snap them onto the curve (choose which reading "
+            "to trust), or restore them."
+        )
 
 
 # ============================================================ TAB 3
@@ -323,6 +380,32 @@ with tab_res:
     if int(gaps.sum()) == 0:
         st.success("No gaps — every record has corrected values.")
     else:
+        g1, g2, g3 = st.columns(3)
+        gap_idx = adj.index[gaps]
+        if g1.button(f"Snap all {int(gaps.sum()):,} gaps — trust level",
+                     width="stretch",
+                     help="Fill every gap that has a plausible level reading; "
+                          "velocity comes from V(L)."):
+            ml = adj.loc[gap_idx, "level_adj"].where(
+                adj.loc[gap_idx, "level_adj"].gt(0)
+                & adj.loc[gap_idx, "level_adj"].le(dia)
+            )
+            SS.manual.loc[gap_idx, "manual_level"] = ml.to_numpy()
+            SS.manual.loc[gap_idx, "manual_velocity"] = np.nan
+            st.rerun()
+        if g2.button(f"Snap all {int(gaps.sum()):,} gaps — trust velocity",
+                     width="stretch",
+                     help="Fill every gap that has a plausible velocity "
+                          "reading; level comes from L(V)."):
+            mv = adj.loc[gap_idx, "velocity_adj"].where(
+                adj.loc[gap_idx, "velocity_adj"].gt(0)
+            )
+            SS.manual.loc[gap_idx, "manual_velocity"] = mv.to_numpy()
+            SS.manual.loc[gap_idx, "manual_level"] = np.nan
+            st.rerun()
+        if g3.button("Clear all manual fills", width="stretch"):
+            SS.manual[:] = np.nan
+            st.rerun()
         gap_view = pd.DataFrame({
             "Timestamp": adj.loc[gaps, "timestamp"],
             "Raw level (in)": adj.loc[gaps, "level_raw"],
