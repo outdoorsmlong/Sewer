@@ -9,6 +9,7 @@ import io
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 import flow_engine as fe
@@ -97,8 +98,9 @@ if SS.manual is None or len(SS.manual) != len(adj):
         {"manual_level": np.nan, "manual_velocity": np.nan}, index=adj.index
     )
 
-tab_adj, tab_corr, tab_res = st.tabs(
-    ["**1 · Review & adjust**", "**2 · Correct**", "**3 · Results & export**"]
+tab_dash, tab_adj, tab_corr, tab_res = st.tabs(
+    ["**Overview**", "**1 · Review & adjust**", "**2 · Correct**",
+     "**3 · Results & export**"]
 )
 
 
@@ -109,6 +111,45 @@ def lv_scatter(frame, lcol, vcol, name, color):
         marker=dict(size=4, color=color, opacity=0.55),
         customdata=frame.index,
     )
+
+
+def hydrograph_stack(frame, lcol, vcol, qcol, units):
+    """Two stacked, time-linked panels: depth + velocity on dual y-axes
+    (top), flow (bottom) — the monitoring-dashboard hydrograph layout."""
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+        row_heights=[0.55, 0.45],
+        specs=[[{"secondary_y": True}], [{"secondary_y": False}]],
+    )
+    fig.add_trace(
+        go.Scattergl(x=frame["timestamp"], y=frame[lcol], name="Depth",
+                     mode="lines", line=dict(width=1, color="#1a237e")),
+        row=1, col=1, secondary_y=False,
+    )
+    fig.add_trace(
+        go.Scattergl(x=frame["timestamp"], y=frame[vcol], name="Velocity",
+                     mode="lines", line=dict(width=1, color="#8e24aa")),
+        row=1, col=1, secondary_y=True,
+    )
+    fig.add_trace(
+        go.Scattergl(x=frame["timestamp"], y=frame[qcol], name="Flow",
+                     mode="lines", line=dict(width=1, color="#1b7f3b")),
+        row=2, col=1,
+    )
+    fig.update_yaxes(title_text="Depth (in)", row=1, col=1,
+                     secondary_y=False, title_font=dict(color="#1a237e"))
+    fig.update_yaxes(title_text="Velocity (ft/s)", row=1, col=1,
+                     secondary_y=True, title_font=dict(color="#8e24aa"),
+                     showgrid=False)
+    fig.update_yaxes(title_text=f"Flow ({units})", row=2, col=1,
+                     title_font=dict(color="#1b7f3b"))
+    fig.update_layout(
+        template="plotly_white", height=620,
+        margin=dict(t=30, b=30, l=10, r=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        hovermode="x unified",
+    )
+    return fig
 
 
 def time_series(frame, ycols, labels, colors, ytitle):
@@ -122,6 +163,59 @@ def time_series(frame, ycols, labels, colors, ytitle):
         )
     fig.update_layout(**CHART, yaxis_title=ytitle, xaxis_title=None)
     return fig
+
+
+# ============================================================ OVERVIEW
+with tab_dash:
+    hd1, hd2 = st.columns([1, 3])
+    stage = hd1.radio("Dataset", ["Raw", "Adjusted", "Corrected"],
+                      horizontal=True, key="dash_stage")
+    if stage == "Raw":
+        dash = adj.rename(columns={"level_raw": "L", "velocity_raw": "V",
+                                   "flow_raw": "Q"})
+    elif stage == "Adjusted":
+        dash = adj.rename(columns={"level_adj": "L", "velocity_adj": "V",
+                                   "flow_adj": "Q"})
+    else:
+        _corr, _, _ = fe.build_corrected(
+            adj, SS.good_mask,
+            SS.manual["manual_level"], SS.manual["manual_velocity"],
+            dia, units,
+        )
+        dash = adj[["timestamp"]].join(
+            _corr[["level_corr", "velocity_corr", "flow_corr"]]
+        ).rename(columns={"level_corr": "L", "velocity_corr": "V",
+                          "flow_corr": "Q"})
+    with hd2:
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Avg depth", f"{dash['L'].mean():.2f} in")
+        k2.metric("Avg velocity", f"{dash['V'].mean():.2f} ft/s")
+        k3.metric("Avg flow", f"{dash['Q'].mean():.3f} {units}")
+        k4.metric("Peak flow", f"{dash['Q'].max():.3f} {units}")
+
+    col_hydro, col_scatter = st.columns([1.15, 0.85], gap="medium")
+    with col_hydro:
+        st.markdown("##### Hydrograph")
+        st.plotly_chart(
+            hydrograph_stack(dash, "L", "V", "Q", units),
+            width="stretch", key="dash_hydro",
+        )
+        st.caption("Depth & velocity share the top panel (dual axes); "
+                   "flow sits below on a linked time axis — zoom either "
+                   "panel and both follow.")
+    with col_scatter:
+        st.markdown("##### Scattergraph")
+        sfig = go.Figure()
+        sfig.add_trace(go.Scattergl(
+            x=dash["V"], y=dash["L"], mode="markers", name=stage,
+            marker=dict(size=4, color="#5b7fb5", opacity=0.55),
+        ))
+        sfig.update_layout(
+            template="plotly_white", height=620,
+            margin=dict(t=30, b=30, l=10, r=10), showlegend=False,
+            xaxis_title="Velocity (ft/s)", yaxis_title="Depth (in)",
+        )
+        st.plotly_chart(sfig, width="stretch", key="dash_scatter")
 
 
 # ============================================================ TAB 1
